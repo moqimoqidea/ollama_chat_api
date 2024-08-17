@@ -1,9 +1,10 @@
 use axum::{
     extract::State,
-    response::Json,
+    response::sse::{Event, KeepAlive, Sse},
     routing::post,
-    Router,
+    Json,
 };
+use futures::Stream;
 use futures::StreamExt;
 use ollama_rs::{
     Ollama,
@@ -14,12 +15,15 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio_stream::wrappers::ReceiverStream;
+use tokio::sync::mpsc;
+use anyhow::Error;  // 新增 anyhow
 
 #[derive(Deserialize)]
 struct ChatRequest {
     model: String,
     prompt: String,
-    stream: Option<bool>, // 新增 stream 参数，默认为 None
+    stream: Option<bool>, // 默认为 true
 }
 
 #[derive(Serialize)]
@@ -33,7 +37,7 @@ async fn main() {
     let ollama = Arc::new(Mutex::new(Ollama::default()));
 
     // 构建路由
-    let app = Router::new()
+    let app = axum::Router::new()
         .route("/chat", post(chat_handler))
         .with_state(ollama);
 
@@ -50,7 +54,7 @@ async fn main() {
 async fn chat_handler(
     State(ollama): State<Arc<Mutex<Ollama>>>,
     Json(payload): Json<ChatRequest>,
-) -> Json<ChatResponse> {
+) -> Sse<impl Stream<Item = Result<Event, Error>>> {
     let model = payload.model;
     let prompt = payload.prompt;
     let stream = payload.stream.unwrap_or(true); // 默认为 true
@@ -61,39 +65,57 @@ async fn chat_handler(
         vec![ChatMessage::user(prompt)],
     );
 
-    let ollama = ollama.lock().await;
-
+    // 如果使用流式输出
     if stream {
-        // 流式输出
-        let mut stream_res: ChatMessageResponseStream = ollama
-            .send_chat_messages_stream(request)
-            .await
-            .unwrap();
+        // 创建异步通道
+        let (tx, rx) = mpsc::channel(100);
 
-        let mut full_response = String::new();
-        while let Some(Ok(partial_res)) = stream_res.next().await {
-            if let Some(assistant_message) = partial_res.message {
-                full_response.push_str(&assistant_message.content);
+        // 克隆 ollama 以便在线程中使用
+        let ollama = ollama.clone();
+
+        // 启动异步任务来处理流式响应
+        tokio::spawn(async move {
+            let ollama = ollama.lock().await;
+
+            let mut stream_res: ChatMessageResponseStream = match ollama
+                .send_chat_messages_stream(request)
+                .await
+            {
+                Ok(stream) => stream,
+                Err(_) => {
+                    let _ = tx.send(Err(anyhow::anyhow!("Failed to start chat stream"))).await;
+                    return;
+                }
+            };
+
+            // 处理流式响应
+            while let Some(Ok(partial_res)) = stream_res.next().await {
+                if let Some(assistant_message) = partial_res.message {
+                    let event = Event::default().data(assistant_message.content);
+                    if tx.send(Ok(event)).await.is_err() {
+                        // 如果客户端断开连接，停止发送
+                        break;
+                    }
+                }
             }
-        }
+        });
 
-        Json(ChatResponse {
-            response: full_response,
-        })
+        // 返回流式响应
+        Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default())
     } else {
-        // 非流式输出
+        // 如果不使用流式输出，返回单次响应
+        let ollama = ollama.lock().await;
+
         let res = ollama.send_chat_messages(request).await;
 
-        match res {
-            Ok(chat_res) => {
-                let response_text = chat_res.message.map(|msg| msg.content).unwrap_or_else(|| "No response".to_string());
-                Json(ChatResponse {
-                    response: response_text,
-                })
-            },
-            Err(_) => Json(ChatResponse {
-                response: "Error occurred while processing the chat.".to_string(),
-            }),
-        }
+        let response_text = match res {
+            Ok(chat_res) => chat_res.message.map(|msg| msg.content).unwrap_or_else(|| "No response".to_string()),
+            Err(_) => "Error occurred while processing the chat.".to_string(),
+        };
+
+        let (tx, rx) = mpsc::channel(1);
+        let _ = tx.send(Ok(Event::default().data(response_text))).await;
+
+        Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default())
     }
 }
