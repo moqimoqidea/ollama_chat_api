@@ -69,7 +69,7 @@ curl --location 'http://127.0.0.1:3000/chat' \
 
 Each part of the response will be sent as `text/event-stream`, containing a JSON object like this:
 
-```json
+```text
 data:{"content":"The"}
 
 data:{"content":" sky"}
