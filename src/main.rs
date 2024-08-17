@@ -1,3 +1,4 @@
+use anyhow::Error;
 use axum::{
     extract::State,
     response::sse::{Event, KeepAlive, Sse},
@@ -7,18 +8,17 @@ use axum::{
 use futures::Stream;
 use futures::StreamExt;
 use ollama_rs::{
-    Ollama,
-    generation::chat::{ChatMessage, ChatMessageResponseStream},
     generation::chat::request::ChatMessageRequest,
+    generation::chat::{ChatMessage, ChatMessageResponseStream},
+    Ollama,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
-use tokio::sync::mpsc;
-use anyhow::Error;
-use serde_json::json;
 
 #[derive(Deserialize)]
 struct ChatRequest {
@@ -35,7 +35,8 @@ struct ChatResponse {
 #[tokio::main]
 async fn main() {
     // 使用 Arc<Mutex<Ollama>> 来共享 Ollama 实例，并保证线程安全
-    let ollama = Arc::new(Mutex::new(Ollama::default()));
+    let ollama = Arc::new(Mutex::new(
+        Ollama::new("http://localhost".to_string(), 11434)));
 
     // 构建路由
     let app = axum::Router::new()
@@ -55,7 +56,7 @@ async fn main() {
 async fn chat_handler(
     State(ollama): State<Arc<Mutex<Ollama>>>,
     Json(payload): Json<ChatRequest>,
-) -> Result<Json<ChatResponse>, Sse<impl Stream<Item = Result<Event, Error>>>> {
+) -> Result<Json<ChatResponse>, Sse<impl Stream<Item=Result<Event, Error>>>> {
     let model = payload.model;
     let prompt = payload.prompt;
     let stream = payload.stream.unwrap_or(true); // 默认为 true
