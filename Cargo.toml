@@ -5,8 +5,9 @@ edition = "2021"
 
 [dependencies]
 axum = "0.6"
-ollama-rs = "0.2.0"
+ollama-rs = { version = "0.2.0", features = ["stream"] }  # 启用 stream feature
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+futures = "0.3"
 

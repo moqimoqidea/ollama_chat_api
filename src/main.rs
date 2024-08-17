@@ -4,9 +4,10 @@ use axum::{
     routing::post,
     Router,
 };
+use futures::StreamExt;
 use ollama_rs::{
     Ollama,
-    generation::chat::{ChatMessage, ChatMessageResponse},
+    generation::chat::{ChatMessage, ChatMessageResponseStream},
     generation::chat::request::ChatMessageRequest,
 };
 use serde::{Deserialize, Serialize};
@@ -18,6 +19,7 @@ use tokio::sync::Mutex;
 struct ChatRequest {
     model: String,
     prompt: String,
+    stream: Option<bool>, // 新增 stream 参数，默认为 None
 }
 
 #[derive(Serialize)]
@@ -51,6 +53,7 @@ async fn chat_handler(
 ) -> Json<ChatResponse> {
     let model = payload.model;
     let prompt = payload.prompt;
+    let stream = payload.stream.unwrap_or(true); // 默认为 true
 
     // 使用 ChatMessageRequest 来构建聊天消息请求
     let request = ChatMessageRequest::new(
@@ -58,21 +61,39 @@ async fn chat_handler(
         vec![ChatMessage::user(prompt)],
     );
 
-    // 调用 ollama 的 chat 功能
     let ollama = ollama.lock().await;
-    let res: Result<ChatMessageResponse, _> = ollama.send_chat_messages(request).await;
 
-    // 处理响应
-    match res {
-        Ok(chat_res) => {
-            // 提取 message 中的内容
-            let response_text = chat_res.message.map(|msg| msg.content).unwrap_or_else(|| "No response".to_string());
-            Json(ChatResponse {
-                response: response_text,
-            })
-        },
-        Err(_) => Json(ChatResponse {
-            response: "Error occurred while processing the chat.".to_string(),
-        }),
+    if stream {
+        // 流式输出
+        let mut stream_res: ChatMessageResponseStream = ollama
+            .send_chat_messages_stream(request)
+            .await
+            .unwrap();
+
+        let mut full_response = String::new();
+        while let Some(Ok(partial_res)) = stream_res.next().await {
+            if let Some(assistant_message) = partial_res.message {
+                full_response.push_str(&assistant_message.content);
+            }
+        }
+
+        Json(ChatResponse {
+            response: full_response,
+        })
+    } else {
+        // 非流式输出
+        let res = ollama.send_chat_messages(request).await;
+
+        match res {
+            Ok(chat_res) => {
+                let response_text = chat_res.message.map(|msg| msg.content).unwrap_or_else(|| "No response".to_string());
+                Json(ChatResponse {
+                    response: response_text,
+                })
+            },
+            Err(_) => Json(ChatResponse {
+                response: "Error occurred while processing the chat.".to_string(),
+            }),
+        }
     }
 }
