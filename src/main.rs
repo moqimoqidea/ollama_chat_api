@@ -18,6 +18,7 @@ use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio::sync::mpsc;
 use anyhow::Error;
+use serde_json::json;
 
 #[derive(Deserialize)]
 struct ChatRequest {
@@ -90,7 +91,9 @@ async fn chat_handler(
             // 处理流式响应
             while let Some(Ok(partial_res)) = stream_res.next().await {
                 if let Some(assistant_message) = partial_res.message {
-                    let event = Event::default().data(assistant_message.content);
+                    // 将响应内容包装在 JSON 中
+                    let json_data = json!({ "content": assistant_message.content }).to_string();
+                    let event = Event::default().data(json_data);
                     if tx.send(Ok(event)).await.is_err() {
                         // 如果客户端断开连接，停止发送
                         break;
