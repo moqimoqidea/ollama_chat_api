@@ -10,7 +10,8 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 futures = "0.3"
-tokio-stream = "0.1"  # 新增 tokio-stream 依赖项
-anyhow = "1.0"        # 新增 anyhow 依赖项
+tokio-stream = "0.1"
+anyhow = "1.0"
+async-stream = "0.3"  # 新增 async-stream 依赖项
 
 
